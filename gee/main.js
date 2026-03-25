@@ -177,3 +177,62 @@ print('factor_sum (suma):', agebFinal.aggregate_sum('factor_sum'));
 print('── Totales Manzanas ──');
 print('total (suma):',      manzanasFinal.aggregate_sum('total'));
 print('factor_sum (suma):', manzanasFinal.aggregate_sum('factor_sum'));
+
+// ══════════════════════════════════════════════
+// ── Manzanas en más de un distrito
+// ══════════════════════════════════════════════
+
+// Buffer negativo de 1 m: elimina toques de borde sin calcular áreas por par
+var mzaErodidas = manzanasFinal.map(function(f) {
+  return f.setGeometry(f.geometry().buffer(-1, 1));
+});
+
+// Join espacial vectorizado: cada manzana acumula los distritos que la solapan realmente
+var mzaConDistritos = ee.Join.saveAll('distritos_match').apply({
+  primary:   mzaErodidas,
+  secondary: distritos_raw,
+  condition: ee.Filter.intersects({ leftField: '.geo', rightField: '.geo' })
+});
+
+var mzaMultiples = mzaConDistritos.filter(
+  ee.Filter.gt(ee.List([]).length(), 1)  // placeholder — se evalúa abajo
+);
+
+// Conteo de distritos por manzana (sin geometría, solo tamaño de lista)
+var mzaConCount = mzaConDistritos.map(function(mza) {
+  return mza.set('n_distritos', ee.List(mza.get('distritos_match')).size());
+});
+
+mzaMultiples = mzaConCount.filter(ee.Filter.gt('n_distritos', 1));
+
+print('── Manzanas en más de un distrito ──');
+print('Manzanas con respondientes:', manzanasFinal.size());
+print('Manzanas en >1 distrito:',    mzaMultiples.size());
+
+// ══════════════════════════════════════════════
+// ── Export: respondentes + distritos de su manzana
+// ══════════════════════════════════════════════
+
+// Lista de IDs de distrito por manzana (aggregate_array es operación vectorizada)
+var mzaDistritosFC = mzaConDistritos.map(function(mza) {
+  return ee.Feature(null, {
+    'mza_key':  mza.get('CVEGEO'),
+    'distrito': ee.FeatureCollection(ee.List(mza.get('distritos_match'))).aggregate_array('ID')
+  });
+});
+
+// Join atributivo: respondentes + lista de distritos de su manzana
+var respondentesConDistrito = ee.Join.inner().apply({
+  primary:   respondentsWithKeys,
+  secondary: mzaDistritosFC,
+  condition: ee.Filter.equals({ leftField: 'mza_key', rightField: 'mza_key' })
+}).map(function(f) {
+  return ee.Feature(f.get('primary'))
+    .set('distrito', ee.Feature(f.get('secondary')).get('distrito'));
+});
+
+Export.table.toDrive({
+  collection:  respondentesConDistrito,
+  description: 'geodata_distritos',
+  fileFormat:  'CSV'
+});
