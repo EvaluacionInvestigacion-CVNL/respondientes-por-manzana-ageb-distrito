@@ -103,12 +103,37 @@ var manzanasConRespondientes = ee.FeatureCollection(
   })
 );
 
+var mzaFactorGroups = ee.List(
+  respondentsWithKeys.reduceColumns({
+    reducer: ee.Reducer.sum().group({ groupField: 1, groupName: 'mza_key' }),
+    selectors: ['factor_cvnl', 'mza_key']
+  }).get('groups')
+);
+
+var mzaFactorsFC = ee.FeatureCollection(
+  mzaFactorGroups.map(function(g) {
+    g = ee.Dictionary(g);
+    return ee.Feature(null, { 'mza_key': g.get('mza_key'), 'factor_sum': g.get('sum') });
+  })
+);
+
+var manzanasFinal = ee.FeatureCollection(
+  ee.Join.inner().apply({
+    primary:   manzanasConRespondientes,
+    secondary: mzaFactorsFC,
+    condition: ee.Filter.equals({ leftField: 'CVEGEO', rightField: 'mza_key' })
+  }).map(function(f) {
+    return ee.Feature(f.get('primary'))
+      .set('factor_sum', ee.Feature(f.get('secondary')).get('factor_sum'));
+  })
+);
+
 var visMza = { min: 1, max: 5, palette: ['d4f7d4', '74c476', '238b45', '00441b'] };
-Map.addLayer(ee.Image().paint(manzanasConRespondientes, 'total'),
+Map.addLayer(ee.Image().paint(manzanasFinal, 'total'),
              visMza, 'Manzanas con Respondientes');
-Map.addLayer(ee.Image().paint({ featureCollection: manzanasConRespondientes, color: 1, width: 1 }),
+Map.addLayer(ee.Image().paint({ featureCollection: manzanasFinal, color: 1, width: 1 }),
              { palette: ['darkgreen'] }, 'Manzanas borders');
-Map.addLayer(manzanasConRespondientes, { opacity: 0 }, 'Manzanas (data)');
+Map.addLayer(manzanasFinal, { opacity: 0 }, 'Manzanas (data)');
 
 // ══════════════════════════════════════════════
 // ── Capas adicionales
@@ -140,3 +165,15 @@ print('Manzanas en respondientes:', mzaKeyList.size());
 print('Manzanas en shapefile:',     cveMzaList.size());
 print('Sin match (deben ser 0):',   noMatchMza.size(), noMatchMza);
 print('Sin respondientes:',         cveMzaList.removeAll(mzaKeyList).size());
+
+// ══════════════════════════════════════════════
+// ── Totales globales
+// ══════════════════════════════════════════════
+
+print('── Totales AGEB ──');
+print('total (suma):',      agebFinal.aggregate_sum('total'));
+print('factor_sum (suma):', agebFinal.aggregate_sum('factor_sum'));
+
+print('── Totales Manzanas ──');
+print('total (suma):',      manzanasFinal.aggregate_sum('total'));
+print('factor_sum (suma):', manzanasFinal.aggregate_sum('factor_sum'));
