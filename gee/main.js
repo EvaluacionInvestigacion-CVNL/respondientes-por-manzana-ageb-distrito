@@ -194,16 +194,11 @@ var mzaConDistritos = ee.Join.saveAll('distritos_match').apply({
   condition: ee.Filter.intersects({ leftField: '.geo', rightField: '.geo' })
 });
 
-var mzaMultiples = mzaConDistritos.filter(
-  ee.Filter.gt(ee.List([]).length(), 1)  // placeholder — se evalúa abajo
-);
-
-// Conteo de distritos por manzana (sin geometría, solo tamaño de lista)
 var mzaConCount = mzaConDistritos.map(function(mza) {
   return mza.set('n_distritos', ee.List(mza.get('distritos_match')).size());
 });
 
-mzaMultiples = mzaConCount.filter(ee.Filter.gt('n_distritos', 1));
+var mzaMultiples = mzaConCount.filter(ee.Filter.gt('n_distritos', 1));
 
 print('── Manzanas en más de un distrito ──');
 print('Manzanas con respondientes:', manzanasFinal.size());
@@ -213,11 +208,30 @@ print('Manzanas en >1 distrito:',    mzaMultiples.size());
 // ── Export: respondentes + distritos de su manzana
 // ══════════════════════════════════════════════
 
-// Lista de IDs de distrito por manzana (aggregate_array es operación vectorizada)
-var mzaDistritosFC = mzaConDistritos.map(function(mza) {
+// Lista de IDs de distrito + distrito con mayor área de intersección por manzana
+var mzaDistritosFC = mzaConCount.map(function(mza) {
+  var matches = ee.List(mza.get('distritos_match'));
+  var mzaGeom = mza.geometry();
+
+  // Solo calcula intersecciones cuando hay más de un distrito (caso minoritario)
+  var distritoUnico = ee.Algorithms.If(
+    ee.Number(mza.get('n_distritos')).eq(1),
+    ee.Feature(matches.get(0)).get('ID'),
+    ee.Feature(
+      ee.FeatureCollection(matches.map(function(d) {
+        d = ee.Feature(d);
+        return ee.Feature(null, {
+          'area': mzaGeom.intersection(d.geometry(), ee.ErrorMargin(1)).area(1),
+          'ID':   d.get('ID')
+        });
+      })).sort('area', false).first()
+    ).get('ID')
+  );
+
   return ee.Feature(null, {
-    'mza_key':  mza.get('CVEGEO'),
-    'distrito': ee.FeatureCollection(ee.List(mza.get('distritos_match'))).aggregate_array('ID')
+    'mza_key':        mza.get('CVEGEO'),
+    'distrito':       ee.FeatureCollection(matches).aggregate_array('ID'),
+    'distrito_unico': distritoUnico
   });
 });
 
@@ -227,8 +241,10 @@ var respondentesConDistrito = ee.Join.inner().apply({
   secondary: mzaDistritosFC,
   condition: ee.Filter.equals({ leftField: 'mza_key', rightField: 'mza_key' })
 }).map(function(f) {
+  var sec = ee.Feature(f.get('secondary'));
   return ee.Feature(f.get('primary'))
-    .set('distrito', ee.Feature(f.get('secondary')).get('distrito'));
+    .set('distrito',       sec.get('distrito'))
+    .set('distrito_unico', sec.get('distrito_unico'));
 });
 
 Export.table.toDrive({
